@@ -28,3 +28,5 @@ build/
 
 # Gemini AI
 .gemini/
+dist-electron/
+squashfs-root/
