@@ -23,7 +23,7 @@
 
 ## ✨ Overview
 
-**Nila** is a lightweight, Spotify-inspired desktop music player built with Electron for Linux. It streams music directly from YouTube using `yt-dlp` and `mpv`, wrapped in a beautiful dark-themed UI with retro orange accents.
+**Nila** is a lightweight, Spotify-inspired desktop music player built with **Electron + React** for Linux. It streams music directly from YouTube using `yt-dlp` and `mpv`, wrapped in a beautiful dark-themed UI with retro orange accents and smooth animations.
 
 No accounts. No ads. No subscriptions. Just music.
 
@@ -31,14 +31,16 @@ No accounts. No ads. No subscriptions. Just music.
 
 ## 🎯 Features
 
+- 🎬 **Intro Animation** — Animated splash screen with logo, equalizer bars, and loading effect
 - 🔍 **YouTube Search** — Search and stream any song from YouTube instantly
 - 🎶 **Multi-Genre Categories** — Browse curated categories: Malayalam, English, Hindi, Tamil, Telugu, Punjabi, Pop, K-Pop, Chill, Romantic, Marathi
 - ❤️ **Liked Songs** — Save your favorite tracks locally for quick access
 - 🎛️ **Floating Player** — A compact, always-on-top mini player with vinyl disc animation
 - ▶️ **Queue System** — Automatic queue management with next/previous track support
 - 🎨 **Retro Dark Theme** — Pure black background with `#eb5e28` orange accents and Space Mono typography
-- ⏯️ **Full Playback Controls** — Play, pause, next, previous, and progress tracking
+- ⏯️ **Reliable Play/Pause** — Process-level pause/resume using SIGSTOP/SIGCONT for rock-solid reliability
 - 💾 **Persistent Favorites** — Your liked songs are saved across sessions
+- 🌊 **Smooth Transitions** — Framer Motion powered view transitions and micro-animations
 
 ---
 
@@ -75,7 +77,7 @@ cd Nila-linux-music-player
 # 3. Install dependencies
 npm install
 
-# 4. Launch the app
+# 4. Launch the app (starts Vite + Electron concurrently)
 npm start
 ```
 
@@ -83,11 +85,14 @@ npm start
 
 ## 🎮 Usage
 
+### Intro Screen
+When you launch Nila, an animated intro plays with the NILA logo, glowing equalizer bars, and a "LOADING" effect before revealing the main interface.
+
 ### Home Screen
-Browse through curated music categories. Click any song card to start streaming.
+Browse through curated music categories. Click any song card to start streaming. Each card shows a play overlay on hover.
 
 ### Search
-Navigate to the **Search** tab, type your query, and press **Enter**. Results appear as interactive cards.
+Navigate to the **Search** tab, type your query, and press **Enter**. Results appear as interactive cards in a responsive grid.
 
 ### Liked Songs
 Click the ❤️ heart icon on the player bar to like/unlike a song. View all your liked songs in the **Liked Songs** tab.
@@ -110,8 +115,11 @@ When a song starts playing, a compact floating player window opens with:
 
 | Technology | Role |
 |---|---|
+| **React 19** | UI framework |
+| **Vite** | Build tool & dev server |
 | **Electron** | Desktop app framework |
-| **HTML/CSS/JS** | Frontend UI |
+| **Framer Motion** | Animations & transitions |
+| **Lucide React** | Icon library |
 | **yt-dlp** | YouTube metadata & stream URL extraction |
 | **mpv** | Audio playback engine |
 | **Node.js** | Backend process management |
@@ -122,36 +130,52 @@ When a song starts playing, a compact floating player window opens with:
 
 ```
 Nila-linux-music-player/
-├── main.js              # Electron main process — window management, playback engine, IPC
-├── index.html           # Main application window layout
-├── index.js             # Renderer process — UI logic, queue system, search, favorites
-├── playing.html         # Floating mini-player window (self-contained HTML + CSS + JS)
-├── styles.css           # Global styles — dark theme, layout, components
-├── package.json         # Project metadata & dependencies
-└── .gitignore           # Git ignore rules
+├── main.js                     # Electron main process — playback, IPC, windows
+├── vite.config.js              # Vite build configuration
+├── package.json                # Scripts & dependencies
+├── src/
+│   ├── renderer/               # React frontend
+│   │   ├── index.html          # Entry HTML
+│   │   ├── main.jsx            # React bootstrap
+│   │   ├── App.jsx             # Root component (state, IPC, routing)
+│   │   ├── components/
+│   │   │   ├── Intro.jsx       # Animated splash screen
+│   │   │   ├── Sidebar.jsx     # Navigation sidebar
+│   │   │   ├── PlayerBar.jsx   # Bottom player controls
+│   │   │   └── SongCard.jsx    # Reusable song card
+│   │   ├── views/
+│   │   │   ├── Home.jsx        # Category browsing
+│   │   │   ├── Search.jsx      # YouTube search
+│   │   │   └── Library.jsx     # Liked songs
+│   │   └── styles/
+│   │       └── global.css      # Design system & theme
+│   └── floating/
+│       └── playing.html        # Mini floating player
+└── legacy_backup/              # Original vanilla JS files
 ```
 
 ### How It Works
 
 ```
-┌─────────────┐     IPC      ┌──────────────┐
-│  index.html │◄────────────►│   main.js    │
-│  index.js   │  (Electron)  │  (Main Proc) │
-│  (Renderer) │              │              │
-└─────────────┘              │  ┌─────────┐ │
-                             │  │ yt-dlp  │ │  → Fetches stream URLs
-┌─────────────┐     IPC      │  └─────────┘ │
-│playing.html │◄────────────►│  ┌─────────┐ │
-│(Float Player)│             │  │  mpv    │ │  → Plays audio
-└─────────────┘              │  └─────────┘ │
-                             └──────────────┘
+┌────────────────┐     IPC      ┌──────────────┐
+│  React App     │◄────────────►│   main.js    │
+│  (Vite HMR)   │  (Electron)  │  (Main Proc) │
+│  App.jsx       │              │              │
+└────────────────┘              │  ┌─────────┐ │
+                                │  │ yt-dlp  │ │  → Fetches stream URLs
+┌────────────────┐     IPC      │  └─────────┘ │
+│  Floating      │◄────────────►│  ┌─────────┐ │
+│  Player (.html)│              │  │  mpv    │ │  → Plays audio
+└────────────────┘              │  └─────────┘ │
+                                └──────────────┘
 ```
 
-1. **User** selects a song in the renderer (index.js)
-2. **Main process** (main.js) receives the request via IPC
-3. **yt-dlp** extracts the best audio stream URL from YouTube
+1. **User** clicks a song in the React renderer
+2. **App.jsx** sends IPC to the Electron main process
+3. **yt-dlp** extracts the best audio stream URL
 4. **mpv** spawns as a child process to play the stream
-5. **Play state** is broadcast to both the main window and floating player
+5. **Play state** is broadcast to both React app and floating player via IPC
+6. **SIGSTOP/SIGCONT** handles reliable pause/resume on Linux
 
 ---
 
@@ -184,4 +208,3 @@ This project is licensed under the **ISC License** — see the [LICENSE](LICENSE
 <p align="center">
   Built with ❤️ and 🎵 by <a href="https://github.com/Adarshh-bit">Adarsh</a>
 </p>
-

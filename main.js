@@ -8,7 +8,10 @@ let floatingWin = null;
 let player = null;
 let currentSongData = null;
 let isPaused = false;
-let playerGeneration = 0; // Track player instances to avoid race conditions
+let playerGeneration = 0;
+
+// Detect if running in dev mode (Vite dev server)
+const isDev = !app.isPackaged;
 
 // ===========================
 // DATA PERSISTENCE
@@ -43,15 +46,21 @@ function createWindow() {
     width: 1200,
     height: 800,
     title: "Nila 2.0",
-    backgroundColor: "#121212",
+    backgroundColor: "#050505",
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
       webSecurity: false,
     },
   });
-  mainWin.loadFile("index.html");
-  // mainWin.webContents.openDevTools();
+
+  if (isDev) {
+    mainWin.loadURL("http://localhost:5173");
+    // Uncomment to open DevTools in dev:
+    // mainWin.webContents.openDevTools();
+  } else {
+    mainWin.loadFile(path.join(__dirname, "dist", "index.html"));
+  }
 }
 
 function createFloatingPlayer() {
@@ -75,13 +84,12 @@ function createFloatingPlayer() {
     },
   });
 
-  floatingWin.loadFile("playing.html");
+  floatingWin.loadFile(path.join(__dirname, "src", "floating", "playing.html"));
 
   floatingWin.on("closed", () => {
     floatingWin = null;
   });
 
-  // Once ready, send current song data
   floatingWin.webContents.on("did-finish-load", () => {
     if (currentSongData) {
       floatingWin.webContents.send("update-song", currentSongData);
@@ -98,26 +106,22 @@ app.on("window-all-closed", () => {
 });
 
 // ===========================
-// PLAYBACK ENGINE
+// PLAYBACK ENGINE (FIXED)
 // ===========================
 function killPlayer() {
   if (player) {
     try {
-      // If it was paused with SIGSTOP, resume first so SIGKILL works
-      if (isPaused) {
-        try { player.kill("SIGCONT"); } catch (e) { /* ignore */ }
-      }
       if (!player.killed) {
-        player.kill("SIGKILL");
+        player.kill("SIGTERM");
       }
     } catch (e) {
       console.error("Error killing player:", e);
     }
     player = null;
+    isPaused = false;
   }
 }
 
-// Broadcast play state to all windows
 function broadcastPlayState(playing) {
   isPaused = !playing;
   if (mainWin && !mainWin.isDestroyed()) {
@@ -143,7 +147,6 @@ ipcMain.on("play-song", (event, songData) => {
   killPlayer();
   isPaused = false;
 
-  // Increment generation to invalidate any stale close events
   playerGeneration++;
   const thisGeneration = playerGeneration;
 
@@ -159,38 +162,33 @@ ipcMain.on("play-song", (event, songData) => {
   }
 
   broadcastSong(songData);
-
-  // Open floating player
   createFloatingPlayer();
 
-  // 1. Get Stream URL
+  // 1. Get stream URL via yt-dlp
   const ytdlp = spawn("yt-dlp", ["-f", "bestaudio", "-g", query]);
 
   ytdlp.stdout.on("data", (data) => {
     const streamUrl = data.toString().trim();
     if (!streamUrl) return;
-
-    // If a newer play request happened, ignore this stale one
     if (thisGeneration !== playerGeneration) return;
 
     console.log("STREAM URL FOUND, Spawning MPV...");
 
-    // 2. Spawn MPV
-    // FIX: Removed --input-file=- as it caused crashes on some systems
+    // 2. Spawn MPV with stdin command mode (not terminal keypress mode)
+    // --input-file=- tells MPV to read input commands from stdin
     player = spawn("mpv", [
       "--no-video",
-      // "--no-terminal", // Keep terminal output for debugging if needed, or remove to silence
+      "--no-terminal",
+      "--input-file=-",
       streamUrl,
     ], {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    // Now that mpv is actually running, broadcast playing state
     broadcastPlayState(true);
 
     player.on("close", (code) => {
       console.log(`Player ended with code ${code}`);
-      // Only handle if this is still the active generation
       if (thisGeneration !== playerGeneration) return;
       player = null;
       broadcastPlayState(false);
@@ -198,28 +196,34 @@ ipcMain.on("play-song", (event, songData) => {
       if (floatingWin && !floatingWin.isDestroyed()) floatingWin.webContents.send("song-finished");
     });
 
-    player.stderr.on("data", (data) => console.error("MPV Error:", data.toString()));
+    player.stderr.on("data", (d) => console.error("MPV:", d.toString()));
     player.on("error", (err) => console.error("MPV Spawn Error:", err));
   });
 
-  ytdlp.stderr.on("data", (data) => console.error("yt-dlp:", data.toString()));
+  ytdlp.stderr.on("data", (d) => console.error("yt-dlp:", d.toString()));
 });
 
+// ===========================
+// PLAY/PAUSE FIX
+// ===========================
+// Using MPV's stdin IPC: send the 'cycle pause' command via stdin pipe.
+// This is MPV's proper terminal command for toggling pause state.
 ipcMain.on("toggle-pause", () => {
-  if (player && !player.killed) {
-    try {
-      // Send 'cycle pause' command to mpv via stdin
-      if (player.stdin && !player.stdin.destroyed) {
-        player.stdin.write("cycle pause\n");
-      }
-      isPaused = !isPaused;
-      broadcastPlayState(!isPaused);
-      console.log("Pause toggled. isPaused:", isPaused);
-    } catch (e) {
-      console.error("Pause error:", e);
-    }
-  } else {
+  if (!player || player.killed) {
     console.log("Cannot pause: No active player.");
+    return;
+  }
+
+  try {
+    // Send MPV input command to toggle pause
+    player.stdin.write("cycle pause\n");
+
+    // Toggle our state tracking
+    isPaused = !isPaused;
+    broadcastPlayState(!isPaused);
+    console.log(isPaused ? "⏸  Paused playback" : "▶  Resumed playback");
+  } catch (e) {
+    console.error("Pause/Resume error:", e);
   }
 });
 
@@ -238,7 +242,6 @@ ipcMain.on("close-floating-player", () => {
   }
 });
 
-// Relay prev/next from floating player to main window (queue lives there)
 ipcMain.on("play-next", () => {
   if (mainWin && !mainWin.isDestroyed()) {
     mainWin.webContents.send("remote-play-next");
@@ -309,7 +312,6 @@ ipcMain.on("search-youtube", (event, query) => {
 ipcMain.on("fetch-category", (event, category) => {
   console.log("FETCH CATEGORY:", category);
 
-  // Each category has a very specific search query
   const queryMap = {
     Malayalam: "latest malayalam movie songs 2025 hits",
     English: "top english songs 2025 billboard hits",
@@ -326,7 +328,6 @@ ipcMain.on("fetch-category", (event, category) => {
 
   const query = queryMap[category] || category + " songs latest";
 
-  // Send results on a UNIQUE channel per category
   fetchYoutubeData(
     [`ytsearch10:${query}`, "--dump-json", "--no-playlist"],
     event,

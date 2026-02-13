@@ -1,16 +1,37 @@
 {
-  "name": "music-player-ui",
-  "version": "1.0.0",
-  "description": "",
+  "name": "nila-music-player",
+  "version": "2.0.0",
+  "description": "A retro-inspired Linux music player built with Electron + React",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "dev": "concurrently --kill-others \"npm run vite\" \"npm run electron\"",
+    "vite": "vite --config vite.config.js",
+    "electron": "wait-on tcp:5173 && electron .",
+    "build": "vite build --config vite.config.js && electron .",
+    "start": "npm run dev"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "music",
+    "player",
+    "electron",
+    "linux",
+    "react"
+  ],
+  "author": "Adarsh",
   "license": "ISC",
   "type": "commonjs",
+  "dependencies": {
+    "framer-motion": "^12.34.0",
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
   "devDependencies": {
-    "electron": "^40.2.1"
+    "@vitejs/plugin-react": "^4.0.0",
+    "concurrently": "^8.0.0",
+    "cross-env": "^7.0.0",
+    "electron": "^40.2.1",
+    "vite": "^5.0.0",
+    "wait-on": "^7.0.0"
   }
 }
