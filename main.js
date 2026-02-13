@@ -1,14 +1,19 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { spawn } = require("child_process");
+const net = require("net");
 const fs = require("fs");
 const path = require("path");
 
 let mainWin;
 let floatingWin = null;
 let player = null;
+let mpvSocket = null;
 let currentSongData = null;
 let isPaused = false;
 let playerGeneration = 0;
+
+// IPC socket path for MPV
+const mpvSocketPath = "/tmp/nila-mpv-ipc.sock";
 
 // Detect if running in dev mode (Vite dev server)
 const isDev = !app.isPackaged;
@@ -106,9 +111,89 @@ app.on("window-all-closed", () => {
 });
 
 // ===========================
+// MPV IPC SOCKET HELPER
+// ===========================
+function sendMpvCommand(command) {
+  return new Promise((resolve, reject) => {
+    if (!mpvSocket && fs.existsSync(mpvSocketPath)) {
+      // Try connecting
+      const client = net.createConnection(mpvSocketPath);
+      client.on("connect", () => {
+        mpvSocket = client;
+        const msg = JSON.stringify({ command }) + "\n";
+        client.write(msg);
+        resolve();
+      });
+      client.on("error", (err) => {
+        console.error("MPV IPC connect error:", err.message);
+        mpvSocket = null;
+        reject(err);
+      });
+      client.on("close", () => {
+        mpvSocket = null;
+      });
+    } else if (mpvSocket) {
+      try {
+        const msg = JSON.stringify({ command }) + "\n";
+        mpvSocket.write(msg);
+        resolve();
+      } catch (e) {
+        mpvSocket = null;
+        reject(e);
+      }
+    } else {
+      reject(new Error("No MPV IPC socket available"));
+    }
+  });
+}
+
+function connectMpvSocket() {
+  // Try to connect with retries since MPV takes a moment to create the socket
+  let attempts = 0;
+  const maxAttempts = 20;
+
+  const tryConnect = () => {
+    attempts++;
+    if (attempts > maxAttempts) {
+      console.error("Failed to connect to MPV IPC socket after", maxAttempts, "attempts");
+      return;
+    }
+
+    if (!fs.existsSync(mpvSocketPath)) {
+      setTimeout(tryConnect, 200);
+      return;
+    }
+
+    const client = net.createConnection(mpvSocketPath);
+    client.on("connect", () => {
+      console.log("✓ Connected to MPV IPC socket");
+      mpvSocket = client;
+    });
+    client.on("error", (err) => {
+      mpvSocket = null;
+      if (attempts < maxAttempts) {
+        setTimeout(tryConnect, 200);
+      }
+    });
+    client.on("close", () => {
+      mpvSocket = null;
+    });
+  };
+
+  setTimeout(tryConnect, 300);
+}
+
+// ===========================
 // PLAYBACK ENGINE (FIXED)
 // ===========================
 function killPlayer() {
+  if (mpvSocket) {
+    try { mpvSocket.destroy(); } catch (e) { }
+    mpvSocket = null;
+  }
+  // Clean up socket file
+  try { if (fs.existsSync(mpvSocketPath)) fs.unlinkSync(mpvSocketPath); } catch (e) { }
+
   if (player) {
     try {
       if (!player.killed) {
@@ -174,26 +259,40 @@ ipcMain.on("play-song", (event, songData) => {
 
     console.log("STREAM URL FOUND, Spawning MPV...");
 
-    // 2. Spawn MPV with stdin command mode (not terminal keypress mode)
-    // --input-file=- tells MPV to read input commands from stdin
+    // Clean up old socket file before spawning
+    try { if (fs.existsSync(mpvSocketPath)) fs.unlinkSync(mpvSocketPath); } catch (e) { }
+
+    // 2. Spawn MPV with IPC server for commands
     player = spawn("mpv", [
       "--no-video",
       "--no-terminal",
-      "--input-file=-",
+      `--input-ipc-server=${mpvSocketPath}`,
       streamUrl,
     ], {
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
     broadcastPlayState(true);
+
+    // Connect to IPC socket after MPV starts
+    connectMpvSocket();
 
     player.on("close", (code) => {
       console.log(`Player ended with code ${code}`);
       if (thisGeneration !== playerGeneration) return;
       player = null;
-      broadcastPlayState(false);
-      if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("song-finished");
-      if (floatingWin && !floatingWin.isDestroyed()) floatingWin.webContents.send("song-finished");
+      if (mpvSocket) { try { mpvSocket.destroy(); } catch (e) { } mpvSocket = null; }
+
+      // Only auto-play next if the song finished normally (code 0)
+      // Don't auto-play on crash (code 1) to prevent chain failures
+      if (code === 0) {
+        broadcastPlayState(false);
+        if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("song-finished");
+        if (floatingWin && !floatingWin.isDestroyed()) floatingWin.webContents.send("song-finished");
+      } else {
+        console.error("MPV crashed with code", code, "— not auto-advancing queue");
+        broadcastPlayState(false);
+      }
     });
 
     player.stderr.on("data", (d) => console.error("MPV:", d.toString()));
@@ -206,25 +305,23 @@ ipcMain.on("play-song", (event, songData) => {
 // ===========================
 // PLAY/PAUSE FIX
 // ===========================
-// Using MPV's stdin IPC: send the 'cycle pause' command via stdin pipe.
-// This is MPV's proper terminal command for toggling pause state.
+// Using MPV's JSON IPC protocol via Unix socket.
+// This is the proper modern approach for MPV v0.41+.
 ipcMain.on("toggle-pause", () => {
   if (!player || player.killed) {
     console.log("Cannot pause: No active player.");
     return;
   }
 
-  try {
-    // Send MPV input command to toggle pause
-    player.stdin.write("cycle pause\n");
-
-    // Toggle our state tracking
-    isPaused = !isPaused;
-    broadcastPlayState(!isPaused);
-    console.log(isPaused ? "⏸  Paused playback" : "▶  Resumed playback");
-  } catch (e) {
-    console.error("Pause/Resume error:", e);
-  }
+  sendMpvCommand(["cycle", "pause"])
+    .then(() => {
+      isPaused = !isPaused;
+      broadcastPlayState(!isPaused);
+      console.log(isPaused ? "⏸  Paused playback" : "▶  Resumed playback");
+    })
+    .catch((e) => {
+      console.error("Pause/Resume error:", e.message);
+    });
 });
 
 ipcMain.on("stop-song", () => {

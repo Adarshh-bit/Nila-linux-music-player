@@ -95,16 +95,21 @@ export default function App() {
     // --------- Add to Queue ---------
     const addToQueue = useCallback(
         (song) => {
-            setQueue((prev) => [...prev, song]);
+            setQueue((prev) => {
+                const insertAt = Math.min(prev.length, Math.max(0, queueIndex + 1));
+                const newQueue = [...prev];
+                newQueue.splice(insertAt, 0, song);
+                return newQueue;
+            });
             showToast({
                 type: 'queue',
-                label: 'Added to Queue',
+                label: 'Playing Next',
                 title: song.title,
                 artist: song.artist,
                 thumbnail: song.thumbnail,
             });
         },
-        [showToast]
+        [showToast, queueIndex]
     );
 
     const playNext = useCallback(() => {
@@ -172,6 +177,14 @@ export default function App() {
             });
         },
         [queue, resetTimer, showToast]
+    );
+
+    // --------- Queue Reorder ---------
+    const reorderQueue = useCallback(
+        (newQueue) => {
+            setQueue(newQueue);
+        },
+        []
     );
 
     // --------- Floating Player ---------
@@ -336,6 +349,7 @@ export default function App() {
                                 queueIndex={queueIndex}
                                 currentSong={currentSong}
                                 onPlayFromQueue={playFromQueue}
+                                onReorderQueue={reorderQueue}
                                 onClose={toggleQueue}
                             />
                         )}
